@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dental Defense - WebXR Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js"
+    }
+  }
+  </script>
+
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #e3f2fd, #ffffff, #e1f5fe);
+    }
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #start-button {
+      width: 100%;
+      height: 100%;
+      font-size: 120px;
+      background: linear-gradient(135deg, rgba(33, 150, 243, 0.9), rgba(3, 169, 244, 0.9));
+      color: white;
+      border: none;
+      border-radius: 0;
+      box-shadow: 0 4px 15px rgba(33, 150, 243, 0.5);
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #start-button:hover {
+      background: linear-gradient(135deg, rgba(33, 150, 243, 1), rgba(3, 169, 244, 1));
+      box-shadow: 0 6px 20px rgba(33, 150, 243, 0.6);
+    }
+    #status {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      font-size: 16px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #333;
+      padding: 12px 18px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+      border: 1px solid rgba(33, 150, 243, 0.2);
+      visibility: hidden;
+    }
+    .webxr-hidden {
+      display: none !important;
+    }
+    .exit-ar { 
+      position: fixed; 
+      top: 20px; 
+      right: 20px; 
+      background: rgba(255, 255, 255, 0.9); 
+      color: #333; 
+      border: none; 
+      border-radius: 50%; 
+      width: 50px; 
+      height: 50px; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      font-size: 24px; 
+      cursor: pointer; 
+      backdrop-filter: blur(5px); 
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2); 
+      z-index: 1000; 
+      display: none; 
+    }
+    .xr-active .exit-ar { 
+      display: flex; 
+    }
+  </style>
+
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">🦷</button>
+    <div id="status"></div>
+  </div>
+
+<button class="exit-ar" id="exit-ar">×</button>
+
+  <audio id="clean-sound" preload="auto">
+    <source src="dead.mp3" type="audio/mpeg">
+  </audio>
+
+  <audio id="cavity-sound" preload="auto">
+    <source src="minecraft-glass-break.mp3" type="audio/mpeg">
+  </audio>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    let camera, scene, renderer;
+    let activeController;
+    let controllers = [];
+    let activeControllerIndex = 0;
+    let controllerPressStart = 0;
+    let upperTeeth = [];
+    let lowerTeeth = [];
+    let currentToothIndex = 0;
+    let currentRow = 'upper'; // 'upper' or 'lower'
+    let cavities = [];
+    let clock = new THREE.Clock();
+    let isPlaying = false;
+    let lastControllerRotation = new THREE.Euler();
+    let gameStartTime = 0;
+    let xrSession = null;
+    
+    // Controller selection variables
+    let isControllerSelectionPhase = false;
+    let controllerSelectionStartTime = 0;
+    let controllerHoldStartTime = {};
+    let selectedController = null;
+    const CONTROLLER_SELECTION_DURATION = 15000;
+    const CONTROLLER_HOLD_DURATION = 4000;
+    
+    // Clap to exit variables
+    let clapStartTime = 0;
+    let isClapDetected = false;
+    const CLAP_HOLD_DURATION = 2000;
+    const CLAP_DISTANCE_THRESHOLD = 0.15;
+    
+    // Game state variables
+    let score = 0;
+    let cavitySpawnInterval = 3.0;
+    let lastCavitySpawn = 0;
+    let cleanedTeeth = new Set();
+    let totalTeeth = 16; // 8 upper + 8 lower
+    
+    // UI elements
+    let scorePanel;
+    let scoreText;
+    let progressText;
+    let selectionIndicator;
+    
+    function updateStatus(message) {
+      console.log('Status:', message);
+    }
+    
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0xf0f8ff, 0.05);
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      document.body.appendChild(renderer.domElement);
+
+      // Preload audio
+      const cleanSound = document.getElementById('clean-sound');
+      cleanSound.load();
+      
+      const cavitySound = document.getElementById('cavity-sound');
+      cavitySound.load();
+
+      // Lighting setup for dental environment
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      directionalLight.position.set(0, 1, 1);
+      directionalLight.castShadow = true;
+      scene.add(directionalLight);
+      
+      // Dental light effect
+      const spotLight = new THREE.SpotLight(0xffffff, 2, 5, Math.PI / 6, 0.5);
+      spotLight.position.set(0, 0.5, 0.5);
+      spotLight.target.position.set(0, 0, -1);
+      scene.add(spotLight);
+      scene.add(spotLight.target);
+
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      document.getElementById('exit-ar').addEventListener('click', endARSession);
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    async function startARSession() {
+      if (!navigator.xr) {
+        updateStatus('WebXR not supported on this device');
+        return;
+      }
+      
+      try {
+        const supported = await navigator.xr.isSessionSupported('immersive-ar');
+        if (supported) {
+          const sessionInit = {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['dom-overlay'],
+            domOverlay: { root: document.body }
+          };
+          const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
+          onSessionStarted(session);
+        } else {
+          updateStatus('WebXR AR session is not supported on this device.');
+        }
+      } catch (error) {
+        updateStatus('Failed to start AR session: ' + error.message);
+      }
+    }
+
+    function hideUIElements() {
+      document.getElementById('overlay').classList.add('webxr-hidden');
+    }
+
+    function showUIElements() {
+      document.getElementById('overlay').classList.remove('webxr-hidden');
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    async function onSessionStarted(session) {
+      xrSession = session;
+      document.getElementById('start-button').style.display = 'none';
+      document.body.classList.add('xr-active');
+      
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      hideUIElements();
+
+      updateStatus('Creating dental environment...');
+
+      createTeeth();
+      create3DUI();
+      createSelectionIndicator();
+      setupController(session);
+
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+
+      startControllerSelection();
+    }
+
+    function createTeeth() {
+      const archRadius = 0.8; // Radius of the dental arch curve
+      
+      // Create upper row of teeth in curved formation
+      for (let i = 0; i < 8; i++) {
+        const tooth = createTooth(i);
+        // Calculate angle for curved positioning
+        const angle = (i - 3.5) * Math.PI / 12; // Spread across arc
+        const x = Math.sin(angle) * archRadius;
+        const z = -1.5 + Math.cos(angle) * archRadius * 0.3; // Depth curve
+        tooth.position.set(x, 0.2, z);
+        // Rotate tooth to face outward
+        tooth.rotation.y = -angle * 0.5;
+        scene.add(tooth);
+        upperTeeth.push(tooth);
+      }
+      
+      // Create lower row of teeth in curved formation
+      for (let i = 0; i < 8; i++) {
+        const tooth = createTooth(i + 8);
+        // Calculate angle for curved positioning
+        const angle = (i - 3.5) * Math.PI / 12; // Spread across arc
+        const x = Math.sin(angle) * archRadius;
+        const z = -1.5 + Math.cos(angle) * archRadius * 0.3; // Depth curve
+        tooth.position.set(x, -0.2, z);
+        // Rotate tooth to face outward
+        tooth.rotation.y = -angle * 0.5;
+        scene.add(tooth);
+        lowerTeeth.push(tooth);
+      }
+    }
+
+    function createTooth(index) {
+      const group = new THREE.Group();
+      
+      // Tooth geometry - different shapes for different teeth, made bigger
+      let geometry;
+      if (index % 8 < 2 || index % 8 > 5) {
+        // Molars - wider and bigger
+        geometry = new THREE.BoxGeometry(0.16, 0.2, 0.14);
+      } else if (index % 8 === 3 || index % 8 === 4) {
+        // Front teeth - thinner but bigger
+        geometry = new THREE.BoxGeometry(0.12, 0.24, 0.12);
+      } else {
+        // Canines - pointed and bigger
+        geometry = new THREE.ConeGeometry(0.08, 0.24, 8);
+      }
+      
+      // Tooth material - white/ivory color
+      const material = new THREE.MeshPhysicalMaterial({
+        color: 0xfff8dc,
+        roughness: 0.3,
+        metalness: 0.1,
+        clearcoat: 0.8,
+        clearcoatRoughness: 0.2
+      });
+      
+      const tooth = new THREE.Mesh(geometry, material);
+      tooth.castShadow = true;
+      tooth.receiveShadow = true;
+      group.add(tooth);
+      
+      // Add tooth root/gum line - bigger
+      const gumGeometry = new THREE.BoxGeometry(0.18, 0.06, 0.16);
+      const gumMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0xffb6c1,
+        roughness: 0.7,
+        metalness: 0
+      });
+      const gum = new THREE.Mesh(gumGeometry, gumMaterial);
+      gum.position.y = index < 8 ? -0.13 : 0.13;
+      group.add(gum);
+      
+      group.userData = { 
+        toothIndex: index, 
+        isClean: false,
+        originalColor: 0xfff8dc,
+        hasCavity: false
+      };
+      
+      return group;
+    }
+
+    function createSelectionIndicator() {
+      // Create a ring to show which tooth is selected
+      const geometry = new THREE.RingGeometry(0.12, 0.15, 32);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.7
+      });
+      selectionIndicator = new THREE.Mesh(geometry, material);
+      scene.add(selectionIndicator);
+    }
+
+    function updateSelectionIndicator() {
+      const teeth = currentRow === 'upper' ? upperTeeth : lowerTeeth;
+      if (teeth[currentToothIndex]) {
+        const tooth = teeth[currentToothIndex];
+        selectionIndicator.position.copy(tooth.position);
+        selectionIndicator.position.z += 0.15;
+        
+        // Pulse effect
+        const scale = 1 + Math.sin(clock.getElapsedTime() * 5) * 0.1;
+        selectionIndicator.scale.set(scale, scale, scale);
+      }
+    }
+
+    function createBacteriaCharacter() {
+      const group = new THREE.Group();
+      
+      // Main body - squishy blob shape
+      const bodyGeometry = new THREE.SphereGeometry(0.04, 12, 8);
+      bodyGeometry.scale(1, 0.8, 1.2); // Make it more blob-like
+      const bodyMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x4a5d23, // Gross green color
+        roughness: 0.8,
+        metalness: 0.1,
+        emissive: 0x1a2008,
+        emissiveIntensity: 0.3
+      });
+      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      group.add(body);
+      
+      // Left eye
+      const leftEyeGeometry = new THREE.SphereGeometry(0.015, 8, 8);
+      const leftEyeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const leftEye = new THREE.Mesh(leftEyeGeometry, leftEyeMaterial);
+      leftEye.position.set(-0.02, 0.015, 0.035);
+      group.add(leftEye);
+      
+      // Right eye
+      const rightEyeGeometry = new THREE.SphereGeometry(0.015, 8, 8);
+      const rightEyeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const rightEye = new THREE.Mesh(rightEyeGeometry, rightEyeMaterial);
+      rightEye.position.set(0.02, 0.015, 0.035);
+      group.add(rightEye);
+      
+      // Left pupil
+      const leftPupilGeometry = new THREE.SphereGeometry(0.006, 6, 6);
+      const leftPupilMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+      const leftPupil = new THREE.Mesh(leftPupilGeometry, leftPupilMaterial);
+      leftPupil.position.set(-0.02, 0.015, 0.042);
+      group.add(leftPupil);
+      
+      // Right pupil
+      const rightPupilGeometry = new THREE.SphereGeometry(0.006, 6, 6);
+      const rightPupilMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+      const rightPupil = new THREE.Mesh(rightPupilGeometry, rightPupilMaterial);
+      rightPupil.position.set(0.02, 0.015, 0.042);
+      group.add(rightPupil);
+      
+      // Store references to pupils for animation
+      group.userData.leftPupil = leftPupil;
+      group.userData.rightPupil = rightPupil;
+      group.userData.leftEye = leftEye;
+      group.userData.rightEye = rightEye;
+      group.userData.pupilTimer = 0;
+      
+      return group;
+    }
+
+    function animateBacteriaEyes(bacteria, deltaTime) {
+      bacteria.userData.pupilTimer += deltaTime;
+      
+      // Move pupils around randomly inside the eyes
+      const leftPupil = bacteria.userData.leftPupil;
+      const rightPupil = bacteria.userData.rightPupil;
+      const leftEye = bacteria.userData.leftEye;
+      const rightEye = bacteria.userData.rightEye;
+      
+      // Random movement with smooth transitions
+      const time = bacteria.userData.pupilTimer;
+      const moveSpeed = 0.5;
+      const moveRange = 0.008; // How far pupils can move within the eye
+      
+      // Left pupil movement
+      const leftOffsetX = Math.sin(time * moveSpeed) * moveRange;
+      const leftOffsetY = Math.cos(time * moveSpeed * 1.3) * moveRange;
+      leftPupil.position.x = leftEye.position.x + leftOffsetX;
+      leftPupil.position.y = leftEye.position.y + leftOffsetY;
+      
+      // Right pupil movement (slightly different timing for more natural look)
+      const rightOffsetX = Math.sin(time * moveSpeed * 0.8) * moveRange;
+      const rightOffsetY = Math.cos(time * moveSpeed * 1.1) * moveRange;
+      rightPupil.position.x = rightEye.position.x + rightOffsetX;
+      rightPupil.position.y = rightEye.position.y + rightOffsetY;
+    }
+
+    function createCavity() {
+      // Randomly select a tooth
+      const isUpper = Math.random() > 0.5;
+      const teeth = isUpper ? upperTeeth : lowerTeeth;
+      const randomIndex = Math.floor(Math.random() * teeth.length);
+      const targetTooth = teeth[randomIndex];
+      
+      // Don't spawn on already clean teeth
+      if (cleanedTeeth.has(targetTooth.userData.toothIndex)) return;
+      
+      // Create bacteria character instead of simple cavity
+      const cavity = createBacteriaCharacter();
+      cavity.position.copy(targetTooth.position);
+      cavity.position.z += 0.08;
+      
+      cavity.userData = {
+        targetTooth: targetTooth,
+        timeOnTooth: 0,
+        jumpTimer: 0,
+        currentTooth: targetTooth,
+        row: isUpper ? 'upper' : 'lower',
+        index: randomIndex,
+        pupilTimer: Math.random() * 10 // Random start time for eye movement
+      };
+      
+      scene.add(cavity);
+      cavities.push(cavity);
+      
+      // Mark tooth as having cavity
+      targetTooth.userData.hasCavity = true;
+    }
+
+    function updateCavities(dt) {
+      for (let i = cavities.length - 1; i >= 0; i--) {
+        const cavity = cavities[i];
+        cavity.userData.timeOnTooth += dt;
+        cavity.userData.jumpTimer += dt;
+        
+        // Animate bacteria eyes
+        animateBacteriaEyes(cavity, dt);
+        
+        // Make cavity bounce and wiggle
+        const bounceHeight = Math.abs(Math.sin(clock.getElapsedTime() * 3)) * 0.06;
+        const wiggleX = Math.sin(clock.getElapsedTime() * 4) * 0.01;
+        cavity.position.y = cavity.userData.currentTooth.position.y + bounceHeight;
+        cavity.position.x = cavity.userData.currentTooth.position.x + wiggleX;
+        
+        // Add slight rotation for character movement
+        cavity.rotation.y = Math.sin(clock.getElapsedTime() * 2) * 0.2;
+        
+        // Jump to another tooth every 2 seconds
+        if (cavity.userData.jumpTimer > 2.0) {
+          cavity.userData.jumpTimer = 0;
+          
+          // Clear current tooth's cavity flag
+          cavity.userData.currentTooth.userData.hasCavity = false;
+          
+          // Jump to random nearby tooth
+          const teeth = cavity.userData.row === 'upper' ? upperTeeth : lowerTeeth;
+          let newIndex = Math.floor(Math.random() * teeth.length);
+          
+          // Avoid cleaned teeth
+          let attempts = 0;
+          while (cleanedTeeth.has(teeth[newIndex].userData.toothIndex) && attempts < 10) {
+            newIndex = Math.floor(Math.random() * teeth.length);
+            attempts++;
+          }
+          
+          cavity.userData.currentTooth = teeth[newIndex];
+          cavity.userData.index = newIndex;
+          
+          // Animate jump
+          cavity.position.x = teeth[newIndex].position.x;
+          cavity.position.z = teeth[newIndex].position.z + 0.08;
+          
+          // Mark new tooth as having cavity
+          teeth[newIndex].userData.hasCavity = true;
+        }
+        
+        // Create decay effect if cavity stays too long (after 5 seconds)
+        if (cavity.userData.timeOnTooth > 5.0) {
+          const tooth = cavity.userData.currentTooth;
+          const toothMesh = tooth.children[0];
+          if (toothMesh && toothMesh.material) {
+            // Darken the tooth gradually
+            const darkness = Math.min(cavity.userData.timeOnTooth / 10, 0.5);
+            toothMesh.material.color.setRGB(1 - darkness, 1 - darkness, 0.8 - darkness);
+          }
+        }
+      }
+    }
+
+    function cleanTooth() {
+      const teeth = currentRow === 'upper' ? upperTeeth : lowerTeeth;
+      const currentTooth = teeth[currentToothIndex];
+      
+      if (!currentTooth) return;
+      
+      // Check if there's a cavity on this tooth
+      let cavityFound = false;
+      for (let i = cavities.length - 1; i >= 0; i--) {
+        const cavity = cavities[i];
+        if (cavity.userData.currentTooth === currentTooth) {
+          // Remove cavity
+          scene.remove(cavity);
+          cavities.splice(i, 1);
+          cavityFound = true;
+          
+          // Play clean sound
+          const cleanSound = document.getElementById('clean-sound');
+          cleanSound.currentTime = 0;
+          cleanSound.play().catch(err => console.warn('Audio play failed:', err));
+          
+          // Add score
+          score += 10;
+          
+          // Clean the tooth
+          cleanedTeeth.add(currentTooth.userData.toothIndex);
+          currentTooth.userData.isClean = true;
+          currentTooth.userData.hasCavity = false;
+          
+          // Make tooth sparkle
+          const toothMesh = currentTooth.children[0];
+          if (toothMesh && toothMesh.material) {
+            toothMesh.material.color.set(0xffffff);
+            toothMesh.material.emissive = new THREE.Color(0x88ff88);
+            toothMesh.material.emissiveIntensity = 0.5;
+            
+            // Fade out sparkle
+            setTimeout(() => {
+              toothMesh.material.emissive = new THREE.Color(0x000000);
+              toothMesh.material.emissiveIntensity = 0;
+            }, 500);
+          }
+          
+          // Create particle effect
+          createCleanEffect(currentTooth.position);
+          break;
+        }
+      }
+      
+      if (!cavityFound && !currentTooth.userData.isClean) {
+        // No cavity here - play error sound
+        const cavitySound = document.getElementById('cavity-sound');
+        cavitySound.currentTime = 0;
+        cavitySound.volume = 0.3;
+        cavitySound.play().catch(err => console.warn('Audio play failed:', err));
+      }
+    }
+
+    function createCleanEffect(position) {
+      // Create sparkle particles
+      for (let i = 0; i < 10; i++) {
+        const geometry = new THREE.SphereGeometry(0.01, 8, 8);
+        const material = new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.3, 1, 0.8),
+          transparent: true,
+          opacity: 1
+        });
+        
+        const particle = new THREE.Mesh(geometry, material);
+        particle.position.copy(position);
+        
+        const velocity = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.02,
+          Math.random() * 0.02,
+          (Math.random() - 0.5) * 0.02
+        );
+        
+        scene.add(particle);
+        
+        // Animate particle
+        const startTime = clock.getElapsedTime();
+        const animate = () => {
+          const elapsed = clock.getElapsedTime() - startTime;
+          if (elapsed < 1) {
+            particle.position.add(velocity);
+            particle.material.opacity = 1 - elapsed;
+            particle.scale.setScalar(1 - elapsed * 0.5);
+            requestAnimationFrame(animate);
+          } else {
+            scene.remove(particle);
+            particle.geometry.dispose();
+            particle.material.dispose();
+          }
+        };
+        requestAnimationFrame(animate);
+      }
+    }
+
+    function startControllerSelection() {
+      isControllerSelectionPhase = true;
+      controllerSelectionStartTime = clock.getElapsedTime();
+      selectedController = null;
+      controllerHoldStartTime = {};
+      
+      updateStatus('Hold controller in front to start');
+    }
+
+    function checkControllerSelection() {
+      if (!isControllerSelectionPhase) return;
+      
+      const currentTime = clock.getElapsedTime();
+      const timeElapsed = (currentTime - controllerSelectionStartTime) * 1000;
+      const timeRemaining = CONTROLLER_SELECTION_DURATION - timeElapsed;
+      
+      let highestController = -1;
+      let highestY = -999;
+      
+      for (let i = 0; i < controllers.length; i++) {
+        const controller = controllers[i];
+        if (!controller.visible) continue;
+        
+        if (controller.position.y > highestY) {
+          highestY = controller.position.y;
+          highestController = i;
+        }
+      }
+      
+      for (let i = 0; i < controllers.length; i++) {
+        const controller = controllers[i];
+        if (!controller.visible) continue;
+        
+        const isInFront = controller.position.z > -0.8 && controller.position.z < -0.3 &&
+                         Math.abs(controller.position.x) < 0.3 && 
+                         Math.abs(controller.position.y) < 0.3;
+        
+        const isHighest = (i === highestController);
+        
+        if (isInFront && isHighest) {
+          if (!controllerHoldStartTime[i]) {
+            controllerHoldStartTime[i] = currentTime;
+          }
+          
+          const holdDuration = (currentTime - controllerHoldStartTime[i]) * 1000;
+          
+          if (holdDuration >= CONTROLLER_HOLD_DURATION) {
+            selectedController = i;
+            activeController = controllers[i];
+            activeControllerIndex = i;
+            finishControllerSelection();
+            return;
+          }
+        } else {
+          controllerHoldStartTime[i] = null;
+        }
+      }
+      
+      if (timeRemaining <= 0) {
+        selectedController = highestController >= 0 ? highestController : 0;
+        activeController = controllers[selectedController];
+        activeControllerIndex = selectedController;
+        finishControllerSelection();
+      }
+    }
+
+    function finishControllerSelection() {
+      isControllerSelectionPhase = false;
+      updateStatus('Game started! Clean the teeth!');
+      startGame();
+    }
+
+    function checkClapToExit() {
+      if (!xrSession || controllers.length < 2) return;
+      
+      const controller1 = controllers[0];
+      const controller2 = controllers[1];
+      
+      if (!controller1.visible || !controller2.visible) {
+        isClapDetected = false;
+        clapStartTime = 0;
+        return;
+      }
+      
+      const distance = controller1.position.distanceTo(controller2.position);
+      
+      if (distance <= CLAP_DISTANCE_THRESHOLD) {
+        if (!isClapDetected) {
+          isClapDetected = true;
+          clapStartTime = Date.now();
+        } else {
+          const holdDuration = Date.now() - clapStartTime;
+          if (holdDuration >= CLAP_HOLD_DURATION) {
+            updateStatus('Exiting...');
+            endARSession();
+            return;
+          }
+        }
+      } else {
+        isClapDetected = false;
+        clapStartTime = 0;
+      }
+    }
+
+    function startGame() {
+      isPlaying = true;
+      gameStartTime = clock.getElapsedTime();
+      score = 0;
+      cleanedTeeth.clear();
+    }
+
+    function endARSession() {
+      if (xrSession) {
+        xrSession.end();
+      }
+    }
+
+    function onSessionEnd() {
+      isPlaying = false;
+      isControllerSelectionPhase = false;
+      isClapDetected = false;
+      clapStartTime = 0;
+      document.body.classList.remove('xr-active');
+      showUIElements();
+      document.getElementById('start-button').style.display = 'flex';
+      
+      clearScene();
+      
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+    }
+
+    function clearScene() {
+      // Clear all teeth
+      [...upperTeeth, ...lowerTeeth].forEach(tooth => {
+        tooth.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach(mat => mat.dispose());
+            } else {
+              child.material.dispose();
+            }
+          }
+        });
+        scene.remove(tooth);
+      });
+      upperTeeth = [];
+      lowerTeeth = [];
+      
+      // Clear cavities
+      cavities.forEach(cavity => {
+        cavity.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        scene.remove(cavity);
+      });
+      cavities = [];
+      
+      // Clear UI
+      if (scorePanel) scene.remove(scorePanel);
+      if (selectionIndicator) {
+        if (selectionIndicator.geometry) selectionIndicator.geometry.dispose();
+        if (selectionIndicator.material) selectionIndicator.material.dispose();
+        scene.remove(selectionIndicator);
+      }
+    }
+
+    function createTextTexture(text, fontSize = 48, color = '#ffffff', bgColor = 'rgba(0,0,0,0.8)') {
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = 512;
+      canvas.height = 128;
+      
+      context.fillStyle = bgColor;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      
+      context.strokeStyle = 'rgba(255,255,255,0.3)';
+      context.lineWidth = 2;
+      context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+      
+      context.fillStyle = color;
+      context.font = `bold ${fontSize}px Arial`;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText(text, canvas.width / 2, canvas.height / 2);
+      
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      return texture;
+    }
+
+    function create3DUI() {
+      scorePanel = new THREE.Group();
+      scorePanel.position.set(0, 0.5, -1.5);
+      
+      // Score display
+      const scoreTexture = createTextTexture('Score: 0', 42, '#ffffff', 'rgba(33, 150, 243, 0.8)');
+      const scoreGeometry = new THREE.PlaneGeometry(1.2, 0.3);
+      const scoreMaterial = new THREE.MeshBasicMaterial({ 
+        map: scoreTexture, 
+        transparent: true,
+        side: THREE.DoubleSide
+      });
+      scoreText = new THREE.Mesh(scoreGeometry, scoreMaterial);
+      scoreText.position.y = 0.2;
+      scorePanel.add(scoreText);
+      
+      // Progress display
+      const progressTexture = createTextTexture('Clean: 0/16', 42, '#ffffff', 'rgba(76, 175, 80, 0.8)');
+      const progressGeometry = new THREE.PlaneGeometry(1.2, 0.3);
+      const progressMaterial = new THREE.MeshBasicMaterial({ 
+        map: progressTexture, 
+        transparent: true,
+        side: THREE.DoubleSide
+      });
+      progressText = new THREE.Mesh(progressGeometry, progressMaterial);
+      progressText.position.y = -0.2;
+      scorePanel.add(progressText);
+      
+      scene.add(scorePanel);
+    }
+
+    function update3DScorePanel() {
+      if (!scorePanel) return;
+      
+      scoreText.material.map = createTextTexture(`Score: ${score}`, 42, '#ffffff', 'rgba(33, 150, 243, 0.8)');
+      scoreText.material.map.needsUpdate = true;
+      
+      progressText.material.map = createTextTexture(`Clean: ${cleanedTeeth.size}/${totalTeeth}`, 42, '#ffffff', 'rgba(76, 175, 80, 0.8)');
+      progressText.material.map.needsUpdate = true;
+    }
+
+    function setupController(session) {
+      controllers = [];
+      for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        
+        controller.addEventListener('selectstart', () => {
+          if (isPlaying && !isControllerSelectionPhase && i === activeControllerIndex) {
+            cleanTooth();
+          }
+        });
+        
+        scene.add(controller);
+        
+        // Controller visual (invisible)
+        const cg = new THREE.Group();
+        const geom = new THREE.SphereGeometry(0.03, 16, 16);
+        const mat = new THREE.MeshPhysicalMaterial({
+          color: 0xffffff,
+          roughness: 0.1,
+          metalness: 0.1,
+          clearcoat: 1.0,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.2
+        });
+        const cm = new THREE.Mesh(geom, mat);
+        cg.add(cm);
+        cg.add(new THREE.PointLight(0xffffff, 1.5, 0.3));
+        controller.add(cg);
+        
+        // Make controller invisible
+        cg.visible = false;
+        
+        controllers.push(controller);
+      }
+    }
+
+    function handleControllerRotation() {
+      if (!activeController || !isPlaying) return;
+      const rot = new THREE.Euler().setFromQuaternion(activeController.quaternion);
+      const d = rot.z - lastControllerRotation.z;
+      
+      const sensitivity = 0.15;
+      
+      if (Math.abs(d) > sensitivity) {
+        if (d > 0) {
+          // Rotate right - move to next tooth
+          currentToothIndex++;
+          if (currentToothIndex >= 8) {
+            currentToothIndex = 0;
+            // Switch row
+            currentRow = currentRow === 'upper' ? 'lower' : 'upper';
+          }
+        } else {
+          // Rotate left - move to previous tooth
+          currentToothIndex--;
+          if (currentToothIndex < 0) {
+            currentToothIndex = 7;
+            // Switch row
+            currentRow = currentRow === 'upper' ? 'lower' : 'upper';
+          }
+        }
+      }
+      
+      // Also allow vertical rotation to switch rows
+      const verticalD = rot.x - lastControllerRotation.x;
+      if (Math.abs(verticalD) > sensitivity) {
+        currentRow = verticalD > 0 ? 'upper' : 'lower';
+      }
+      
+      lastControllerRotation.copy(rot);
+    }
+
+    function checkWinCondition() {
+      if (cleanedTeeth.size >= totalTeeth) {
+        // All teeth cleaned!
+        isPlaying = false;
+        
+        // Victory effect
+        const victoryText = createTextTexture('🎉 Perfect Smile! 🎉', 60, '#ffff00', 'rgba(76, 175, 80, 0.9)');
+        const victoryGeometry = new THREE.PlaneGeometry(2, 0.5);
+        const victoryMaterial = new THREE.MeshBasicMaterial({ 
+          map: victoryText, 
+          transparent: true,
+          side: THREE.DoubleSide
+        });
+        const victoryMesh = new THREE.Mesh(victoryGeometry, victoryMaterial);
+        victoryMesh.position.set(0, 0, -1);
+        scene.add(victoryMesh);
+        
+        // Make all teeth sparkle
+        [...upperTeeth, ...lowerTeeth].forEach(tooth => {
+          const toothMesh = tooth.children[0];
+          if (toothMesh && toothMesh.material) {
+            toothMesh.material.emissive = new THREE.Color(0xffff88);
+            toothMesh.material.emissiveIntensity = 0.3;
+          }
+        });
+        
+        // Restart after 5 seconds
+        setTimeout(() => {
+          scene.remove(victoryMesh);
+          victoryMesh.geometry.dispose();
+          victoryMesh.material.dispose();
+          resetGame();
+        }, 5000);
+      }
+    }
+
+    function resetGame() {
+      // Reset game state
+      score = 0;
+      cleanedTeeth.clear();
+      currentToothIndex = 0;
+      currentRow = 'upper';
+      gameStartTime = clock.getElapsedTime();
+      isPlaying = true;
+      
+      // Reset teeth appearance
+      [...upperTeeth, ...lowerTeeth].forEach(tooth => {
+        tooth.userData.isClean = false;
+        tooth.userData.hasCavity = false;
+        const toothMesh = tooth.children[0];
+        if (toothMesh && toothMesh.material) {
+          toothMesh.material.color.set(0xfff8dc);
+          toothMesh.material.emissive = new THREE.Color(0x000000);
+          toothMesh.material.emissiveIntensity = 0;
+        }
+      });
+      
+      // Clear existing cavities
+      cavities.forEach(cavity => {
+        cavity.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        scene.remove(cavity);
+      });
+      cavities = [];
+    }
+
+    function render(time, frame) {
+      const dt = Math.min(clock.getDelta(), 1/30);
+      
+      if (frame) {
+        // Check clap to exit
+        if (!isControllerSelectionPhase) {
+          checkClapToExit();
+        }
+        
+        // Handle controller selection
+        if (isControllerSelectionPhase) {
+          checkControllerSelection();
+        }
+        
+        // Handle gameplay
+        if (isPlaying && !isControllerSelectionPhase) {
+          handleControllerRotation();
+          updateSelectionIndicator();
+          updateCavities(dt);
+          update3DScorePanel();
+          
+          // Spawn cavities
+          if (clock.getElapsedTime() - lastCavitySpawn > cavitySpawnInterval) {
+            createCavity();
+            lastCavitySpawn = clock.getElapsedTime();
+            // Gradually increase difficulty
+            cavitySpawnInterval = Math.max(1.5, cavitySpawnInterval - 0.05);
+          }
+          
+          // Check win condition
+          checkWinCondition();
+        }
+      }
+      
+      renderer.render(scene, camera);
+    }
+  </script>
+
+</body>
+</html>
